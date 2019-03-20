@@ -1,7 +1,7 @@
 # spsc benchmarks
 
 This is a small repository to benchmark several ways of moving lots of small items between
-threads in Rust. Specifically, we test channels with a single producer (writer) and a single producer.
+threads in Rust. Specifically, we test channels with a single producer (writer) and a single consumer.
 
 ## Overview of implementations
 
