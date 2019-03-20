@@ -1,0 +1,8 @@
+[package]
+name = "spsc-benches"
+version = "0.1.0"
+authors = ["Marcus Klaas de Vries <mail@marcusklaas.nl>"]
+edition = "2018"
+
+[dependencies]
+crossbeam = "0.7"
