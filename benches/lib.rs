@@ -126,5 +126,24 @@ mod channels {
             });
         });
     }
+
+    #[bench]
+    fn spsc_simple(b: &mut test::Bencher) {
+        b.iter(|| {
+            crossbeam::scope(move |scope| {
+                let (mut sender, mut receiver) = bounded(CHANNEL_BUFFER_SIZE);
+                scope.spawn(move |_| {
+                    for i in 0..BENCH_ITERS {
+                        sender.send(produce_value(PRODUCTION_DIFFICULTY)).unwrap();
+                    }            
+                });
+
+                let mut count = 0;
+
+                
+                assert_eq!(BENCH_ITERS, receiver.into_iter().map(|i| consume_value(CONSUMPTION_DIFFICULTY)).count());
+            });
+        });
+    }
 }
 
