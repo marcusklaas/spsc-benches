@@ -8,7 +8,7 @@ pub fn consume_value(difficulty: usize) -> usize {
 
 pub mod spinlock_spsc {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicUsize, AtomicBool, AtomicPtr, Ordering};
     use std::mem;
 
     pub struct Sender<T> {
@@ -20,7 +20,7 @@ pub mod spinlock_spsc {
         buf1_started_writing: Arc<AtomicBool>,
         buf1_finished_reading: Arc<AtomicBool>,
 
-        buf2: Arc<[T]>,
+        buf2: *const T,
         buf2_offset: Arc<AtomicUsize>,
         buf2_started_writing: Arc<AtomicBool>,
         buf2_finished_reading: Arc<AtomicBool>,
@@ -29,46 +29,81 @@ pub mod spinlock_spsc {
     impl<T> Sender<T> {
         // TODO: maybe we could do with immutable ref? what would be benefit?
         pub fn send(&mut self, val: T) -> () {
-            // always write to buf1
-            if self.write_offset < self.capacity {
-                unsafe {
-                    (self.buf1 as *mut T).add(self.write_offset).write(val);
-                }
-                self.write_offset += 1;
-                self.buf1_offset.store(self.write_offset, Ordering::Release);
-                dbg!(self.write_offset);
+            if self.write_offset == self.capacity {
+                // spin lock until buf2 is ready for us
+                while !self.buf2_finished_reading.load(Ordering::Acquire) {}
+
+                self.write_offset = 0;
+                mem::swap(&mut self.buf1, &mut self.buf2);
+                mem::swap(&mut self.buf1_offset, &mut self.buf2_offset);
+                mem::swap(&mut self.buf1_started_writing, &mut self.buf2_started_writing);
+                mem::swap(&mut self.buf1_finished_reading, &mut self.buf2_finished_reading);
+
+                self.buf1_offset.store(0, Ordering::Release);
+                self.buf1_started_writing.store(true, Ordering::Release);
+                // TODO: is this final ordering correct?
+                self.buf2_started_writing.store(false, Ordering::Relaxed);
             }
+
+            // always write to buf1
+            unsafe {
+                (self.buf1 as *mut T).add(self.write_offset).write(val);
+            }
+            self.write_offset += 1;
+            self.buf1_offset.store(self.write_offset, Ordering::Release);
         }
     }
 
     pub struct Receiver<T> {
         capacity: usize,
         read_offset: usize,
+        next_offset: usize,
 
         buf1: *const T,
         buf1_offset: Arc<AtomicUsize>,
         buf1_started_writing: Arc<AtomicBool>,
         buf1_finished_reading: Arc<AtomicBool>,
 
-        buf2: Arc<[T]>,
+        buf2: *const T,
         buf2_offset: Arc<AtomicUsize>,
         buf2_started_writing: Arc<AtomicBool>,
         buf2_finished_reading: Arc<AtomicBool>,
     }
 
     impl<T> Receiver<T> {
-        pub fn try_recv(&mut self) -> Option<T> {
+        pub fn recv(&mut self) -> Option<T> {
             // always load from buf1
-            let offset = self.buf1_offset.load(Ordering::Acquire); // TODO: investigate whether we can relax this
-            dbg!(offset);
-            if self.read_offset < offset {
-                self.read_offset += 1;
-                unsafe {
-                    Some(self.buf1.add(self.read_offset).read())
-                }
-            } else {
-                None
+
+            // spinlock on start of start write
+            if self.read_offset == self.capacity {
+                while !self.buf2_started_writing.load(Ordering::Acquire) {}
+
+                self.read_offset = 0;
+                self.next_offset = 0;
+                mem::swap(&mut self.buf1, &mut self.buf2);
+                mem::swap(&mut self.buf1_offset, &mut self.buf2_offset);
+                mem::swap(&mut self.buf1_started_writing, &mut self.buf2_started_writing);
+                mem::swap(&mut self.buf1_finished_reading, &mut self.buf2_finished_reading);
+                
+                // TODO: check ordering
+                self.buf1_finished_reading.store(false, Ordering::Relaxed);
             }
+
+            // spinlock on next value
+            while self.read_offset == self.next_offset {
+                self.next_offset = self.buf1_offset.load(Ordering::Acquire);
+            }
+
+            let res = unsafe {
+                Some(self.buf1.add(self.read_offset).read())
+            };
+            self.read_offset += 1;
+
+            if self.read_offset == self.capacity {
+                self.buf1_finished_reading.store(true, Ordering::Relaxed);
+            }
+
+            res
         }
     }
 
@@ -81,7 +116,7 @@ pub mod spinlock_spsc {
         let buf1_started_writing = Arc::new(AtomicBool::new(false));
         let buf1_finished_reading = Arc::new(AtomicBool::new(true));
 
-        let buf2: Arc<[T]> = Vec::with_capacity(capacity).into_boxed_slice().into();
+        let buf2 = Vec::with_capacity(capacity).as_ptr();
         let buf2_offset: Arc<AtomicUsize> = Arc::new(Default::default());
         let buf2_started_writing = Arc::new(AtomicBool::new(false));
         let buf2_finished_reading = Arc::new(AtomicBool::new(true));
@@ -95,7 +130,7 @@ pub mod spinlock_spsc {
             buf1_started_writing: buf1_started_writing.clone(),
             buf1_finished_reading: buf1_finished_reading.clone(),
 
-            buf2: buf2.clone(),
+            buf2: buf2,
             buf2_offset: buf2_offset.clone(),
             buf2_started_writing: buf2_started_writing.clone(),
             buf2_finished_reading: buf2_finished_reading.clone(),
@@ -103,6 +138,7 @@ pub mod spinlock_spsc {
         let receiver = Receiver {
             capacity,
             read_offset: 0,
+            next_offset: 0,
 
             buf1,
             buf1_offset,
@@ -126,7 +162,12 @@ pub mod spinlock_spsc {
         fn simple_send() {
             let (mut snd, mut recv) = bounded(2);
             snd.send(10u32);
-            assert_eq!(recv.try_recv().unwrap(), 10u32);
+            assert_eq!(recv.recv().unwrap(), 10u32);
+            snd.send(5u32);
+            snd.send(7u32);
+
+            assert_eq!(recv.recv().unwrap(), 5u32);
+            assert_eq!(recv.recv().unwrap(), 7u32);
         }
     }
 }
