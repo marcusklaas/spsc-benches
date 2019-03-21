@@ -6,3 +6,127 @@ pub fn consume_value(difficulty: usize) -> usize {
     (1..difficulty).into_iter().fold(1, |x, y| x * y)
 }
 
+pub mod spinlock_spsc {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
+    use std::mem;
+
+    pub struct Sender<T> {
+        capacity: usize,
+        write_offset: usize,
+
+        buf1: *const T,
+        buf1_offset: Arc<AtomicUsize>,
+        buf1_started_writing: Arc<AtomicBool>,
+        buf1_finished_reading: Arc<AtomicBool>,
+
+        buf2: Arc<[T]>,
+        buf2_offset: Arc<AtomicUsize>,
+        buf2_started_writing: Arc<AtomicBool>,
+        buf2_finished_reading: Arc<AtomicBool>,
+    }
+
+    impl<T> Sender<T> {
+        // TODO: maybe we could do with immutable ref? what would be benefit?
+        pub fn send(&mut self, val: T) -> () {
+            // always write to buf1
+            if self.write_offset < self.capacity {
+                unsafe {
+                    (self.buf1 as *mut T).add(self.write_offset).write(val);
+                }
+                self.write_offset += 1;
+                self.buf1_offset.store(self.write_offset, Ordering::Release);
+                dbg!(self.write_offset);
+            }
+        }
+    }
+
+    pub struct Receiver<T> {
+        capacity: usize,
+        read_offset: usize,
+
+        buf1: *const T,
+        buf1_offset: Arc<AtomicUsize>,
+        buf1_started_writing: Arc<AtomicBool>,
+        buf1_finished_reading: Arc<AtomicBool>,
+
+        buf2: Arc<[T]>,
+        buf2_offset: Arc<AtomicUsize>,
+        buf2_started_writing: Arc<AtomicBool>,
+        buf2_finished_reading: Arc<AtomicBool>,
+    }
+
+    impl<T> Receiver<T> {
+        pub fn try_recv(&mut self) -> Option<T> {
+            // always load from buf1
+            let offset = self.buf1_offset.load(Ordering::Acquire); // TODO: investigate whether we can relax this
+            dbg!(offset);
+            if self.read_offset < offset {
+                self.read_offset += 1;
+                unsafe {
+                    Some(self.buf1.add(self.read_offset).read())
+                }
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Creates a single consumer, single produced channel with bounded capacity.
+    pub fn bounded<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
+        assert!(capacity > 0);
+
+        let buf1 = Vec::with_capacity(capacity).as_ptr();
+        let buf1_offset: Arc<AtomicUsize> = Arc::new(Default::default());
+        let buf1_started_writing = Arc::new(AtomicBool::new(false));
+        let buf1_finished_reading = Arc::new(AtomicBool::new(true));
+
+        let buf2: Arc<[T]> = Vec::with_capacity(capacity).into_boxed_slice().into();
+        let buf2_offset: Arc<AtomicUsize> = Arc::new(Default::default());
+        let buf2_started_writing = Arc::new(AtomicBool::new(false));
+        let buf2_finished_reading = Arc::new(AtomicBool::new(true));
+
+        let sender = Sender {
+            capacity,
+            write_offset: 0,
+
+            buf1: buf1,
+            buf1_offset: buf1_offset.clone(),
+            buf1_started_writing: buf1_started_writing.clone(),
+            buf1_finished_reading: buf1_finished_reading.clone(),
+
+            buf2: buf2.clone(),
+            buf2_offset: buf2_offset.clone(),
+            buf2_started_writing: buf2_started_writing.clone(),
+            buf2_finished_reading: buf2_finished_reading.clone(),
+        };
+        let receiver = Receiver {
+            capacity,
+            read_offset: 0,
+
+            buf1,
+            buf1_offset,
+            buf1_started_writing,
+            buf1_finished_reading,
+        
+            buf2,
+            buf2_offset,
+            buf2_started_writing,
+            buf2_finished_reading,
+        };
+
+        (sender, receiver)
+    }
+
+    #[cfg(test)]
+    mod test {
+        use super::*;
+
+        #[test]
+        fn simple_send() {
+            let (mut snd, mut recv) = bounded(2);
+            snd.send(10u32);
+            assert_eq!(recv.try_recv().unwrap(), 10u32);
+        }
+    }
+}
