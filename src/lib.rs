@@ -15,12 +15,12 @@ pub mod spinlock_spsc {
         capacity: usize,
         write_offset: usize,
 
-        buf1: *mut T,
+        buf1: *const T,
         buf1_offset: Arc<AtomicUsize>,
         buf1_started_writing: Arc<AtomicBool>,
         buf1_finished_reading: Arc<AtomicBool>,
 
-        buf2: *mut T,
+        buf2: *const T,
         buf2_offset: Arc<AtomicUsize>,
         buf2_started_writing: Arc<AtomicBool>,
         buf2_finished_reading: Arc<AtomicBool>,
@@ -51,7 +51,7 @@ pub mod spinlock_spsc {
 
             // always write to buf1
             unsafe {
-                self.buf1.offset(self.write_offset as isize).write(val);
+                (self.buf1 as *mut T).offset(self.write_offset as isize).write(val);
             }
             self.write_offset += 1;
             self.buf1_offset.store(self.write_offset, Ordering::Release);
@@ -140,12 +140,12 @@ pub mod spinlock_spsc {
             capacity,
             write_offset: 0,
 
-            buf1: buf1.as_ptr() as *mut T,
+            buf1: buf1.as_ptr(),
             buf1_offset: buf1_offset.clone(),
             buf1_started_writing: buf1_started_writing.clone(),
             buf1_finished_reading: buf1_finished_reading.clone(),
 
-            buf2: buf2.as_ptr() as *mut T,
+            buf2: buf2.as_ptr(),
             buf2_offset: buf2_offset.clone(),
             buf2_started_writing: buf2_started_writing.clone(),
             buf2_finished_reading: buf2_finished_reading.clone(),

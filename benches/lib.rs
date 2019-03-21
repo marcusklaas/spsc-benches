@@ -5,6 +5,7 @@ extern crate test;
 mod channels {
     use crossbeam;
     use spsc_benches::{produce_value, consume_value};
+    use spsc_benches::spinlock_spsc::bounded;
 
     const CHANNEL_BUFFER_SIZE: usize = 12;
     const BENCH_ITERS: usize = 1000;
@@ -134,14 +135,16 @@ mod channels {
                 let (mut sender, mut receiver) = bounded(CHANNEL_BUFFER_SIZE);
                 scope.spawn(move |_| {
                     for i in 0..BENCH_ITERS {
-                        sender.send(produce_value(PRODUCTION_DIFFICULTY)).unwrap();
+                        sender.send(produce_value(PRODUCTION_DIFFICULTY));
                     }            
                 });
 
                 let mut count = 0;
-
-                
-                assert_eq!(BENCH_ITERS, receiver.into_iter().map(|i| consume_value(CONSUMPTION_DIFFICULTY)).count());
+                while let Some(_) = receiver.recv() {
+                    consume_value(CONSUMPTION_DIFFICULTY);
+                    count += 1;
+                }
+                assert_eq!(BENCH_ITERS, count);
             });
         });
     }
