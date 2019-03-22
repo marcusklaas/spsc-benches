@@ -12,8 +12,9 @@ pub mod spinlock_spsc {
     use std::mem;
 
     pub struct Sender<T> {
-        capacity: usize,
+        capacity_mask: usize,
         offset: usize,
+        other_offset: usize,
 
         buf1: *const T,
         // write offset is offset of next write.
@@ -28,11 +29,18 @@ pub mod spinlock_spsc {
     impl<T> Sender<T> {
         // TODO: maybe we could do with immutable ref? what would be benefit?
         pub fn send(&mut self, val: T) -> () {
-            let next_offset = (self.offset + 1) % self.capacity;
+            let next_offset = (self.offset + 1) & self.capacity_mask;
 
-            while next_offset == self.buf1_read_offset.load(Ordering::Relaxed) {
-                if Arc::strong_count(&self.buf1_write_offset) < 2 {
-                    panic!("Receiver hung up!");
+            if next_offset == self.other_offset {
+                loop {
+                    self.other_offset = self.buf1_read_offset.load(Ordering::Relaxed);
+                    if next_offset == self.other_offset {
+                        if Arc::strong_count(&self.buf1_write_offset) < 2 {
+                            panic!("Receiver hung up!");
+                        }
+                    } else {
+                        break;
+                    }
                 }
             }
 
@@ -45,8 +53,9 @@ pub mod spinlock_spsc {
     }
 
     pub struct Receiver<T> {
-        capacity: usize,
+        capacity_mask: usize,
         offset: usize,
+        other_offset: usize,
 
         buf1: *const T,
         buf1_write_offset: Arc<AtomicUsize>,
@@ -57,11 +66,17 @@ pub mod spinlock_spsc {
 
     impl<T> Receiver<T> {
         pub fn recv(&mut self) -> Option<T> {
-            // spinlock on start of start write
-            while self.offset == self.buf1_write_offset.load(Ordering::Relaxed) {
-                if Arc::strong_count(&self.buf1_write_offset) < 2 {
-                    if self.offset == self.buf1_write_offset.load(Ordering::Acquire) {
-                        return None;
+            if self.offset == self.other_offset {
+                loop {
+                    self.other_offset = self.buf1_write_offset.load(Ordering::Relaxed);
+                    if self.offset == self.other_offset {
+                        if Arc::strong_count(&self.buf1_write_offset) < 2 {
+                            if self.offset == self.buf1_write_offset.load(Ordering::Acquire) {
+                                return None;
+                            }
+                        }
+                    } else {
+                        break;
                     }
                 }
             }
@@ -69,7 +84,7 @@ pub mod spinlock_spsc {
             let res = unsafe {
                 Some(self.buf1.offset(self.offset as isize).read())
             };
-            self.offset = (self.offset + 1) % self.capacity;
+            self.offset = (self.offset + 1) & self.capacity_mask;
             self.buf1_read_offset.store(self.offset, Ordering::Release);
 
             res
@@ -80,21 +95,26 @@ pub mod spinlock_spsc {
     pub fn bounded<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
         assert!(capacity > 0);
 
-        let buf1 = Vec::with_capacity(capacity);
+        // least power of 2 greater than capacity
+        let real_capacity = 1 << ((mem::size_of::<usize>() * 8) - capacity.leading_zeros() as usize - 1);
+
+        let buf1 = Vec::with_capacity(real_capacity);
         let buf1_write_offset: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
         let buf1_read_offset: Arc<AtomicUsize> = Arc::new(Default::default());
 
         let sender = Sender {
-            capacity,
+            capacity_mask: real_capacity - 1,
             offset: 0,
+            other_offset: 0,
 
             buf1: buf1.as_ptr(),
             buf1_write_offset: buf1_write_offset.clone(),
             buf1_read_offset: buf1_read_offset.clone(),
         };
         let receiver = Receiver {
-            capacity,
+            capacity_mask: real_capacity - 1,
             offset: 0,
+            other_offset: 0,
 
             buf1: buf1.as_ptr(),
             buf1_write_offset: buf1_write_offset,
@@ -112,21 +132,21 @@ pub mod spinlock_spsc {
 
         #[test]
         fn simple_send() {
-            let (mut snd, mut recv) = bounded(2);
+            let (mut snd, mut recv) = bounded(4);
             snd.send(15u32);
             assert_eq!(recv.recv().unwrap(), 15u32);
             snd.send(5u32);
-            //snd.send(7u32);
+            snd.send(7u32);
 
             assert_eq!(recv.recv().unwrap(), 5u32);
-            //assert_eq!(recv.recv().unwrap(), 7u32);
+            assert_eq!(recv.recv().unwrap(), 7u32);
 
-            // snd.send(1u32);
-            // snd.send(1u32);
+            snd.send(1u32);
+            snd.send(1u32);
 
-            // assert_eq!(recv.recv().unwrap(), 1u32);
-            // assert_eq!(recv.recv().unwrap(), 1u32);
-            // snd.send(1u32);
+            assert_eq!(recv.recv().unwrap(), 1u32);
+            assert_eq!(recv.recv().unwrap(), 1u32);
+            snd.send(1u32);
         }
 
         #[test]
