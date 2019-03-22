@@ -23,6 +23,7 @@ Run all benchmarks by executing `cargo bench` on your commandline.
   values themselves.
 - Crossbeam's MPMC channel with chunking and recycling, where we use another channel to return
   empty vectors back to the producing channel for reuse.
+- A custom single producer single consumer channel.
 
 ## Results
 
@@ -34,10 +35,11 @@ table when applicable.
 
 | implementation           | details                                  | time (nanoseconds)/ iter |
 | ------------------------ | ---------------------------------------- | ------------------------ |
-| overhead                 |                                          | 46,654                   |
-| sequential               |                                          | 216,153                  |
-| crossbeam mpmc           | channel buffer size = 12                 | 234,288                  |
-| mpmc hunked              | channel buffer = 12, chunk size = 100    | 183,385                  |
-| mpmc recycled chunks     |                                          | 170,996                  |
+| overhead                 |                                          | 31,268                   |
+| sequential               |                                          | 158,031                  |
+| crossbeam mpmc           | channel buffer size = 16                 | 176,841                  |
+| mpmc chunked             | channel buffer = 16, chunk size = 100    | 121,835                  |
+| mpmc recycled chunks     |                                          | 116,025                  |
+| custom spsc              | channel buffer size = 16                 | 118,067                  |
 
 [crossbeam]: https://github.com/crossbeam-rs/crossbeam
