@@ -7,7 +7,7 @@ mod channels {
     use spsc_benches::{produce_value, consume_value};
     use spsc_benches::spinlock_spsc::bounded;
 
-    const CHANNEL_BUFFER_SIZE: usize = 12;
+    const CHANNEL_BUFFER_SIZE: usize = 16;
     const BENCH_ITERS: usize = 1000;
     const VECTOR_CHUNK_SIZE: usize = 100;
     const PRODUCTION_DIFFICULTY: usize = 100;
